@@ -31,7 +31,7 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Pool, Transport};
 pub use wire::Line;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
@@ -44,6 +44,8 @@ pub struct NatsTransport {
     subject: String,
     name: String,
     timeout: Option<Duration>,
+    /// The clients a send publishes on, connected once per server and kept.
+    clients: Pool<Client>,
 }
 
 impl NatsTransport {
@@ -55,6 +57,7 @@ impl NatsTransport {
             subject: subject.into(),
             name: DEFAULT_NAME.to_string(),
             timeout: None,
+            clients: Pool::new(),
         }
     }
 
@@ -135,11 +138,18 @@ impl Transport for NatsTransport {
         Ok(arrived)
     }
 
+    /// Publish on the client kept for the server, connected on the first
+    /// send to it, and flush: the PONG says the server has the message.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (server, subject) = self.resolve(target);
-        let mut client = Client::connect(server, &self.name, self.timeout)?;
-        client.publish(subject, bytes)?;
-        client.flush()
+        self.clients.exchange(
+            server,
+            || Client::connect(server, &self.name, self.timeout),
+            |client| {
+                client.publish(subject, bytes)?;
+                client.flush()
+            },
+        )
     }
 }
 
@@ -198,9 +208,8 @@ impl Accepting for NatsTransport {
         let arrived = session
             .next_publish()?
             .ok_or_else(|| protocol_error("the client closed without publishing"))?;
-        // The client flushes with PING after PUB and waits for the PONG;
-        // serve it, and see the client close.
-        session.next_publish()?;
+        // The client flushes with PING after PUB and waits for the PONG.
+        session.answer_flush()?;
         Ok(arrived)
     }
 }
@@ -263,13 +272,45 @@ mod tests {
         let first = session.next_publish().expect("first").expect("one");
         assert_eq!(first.bytes, b"order 1\r\nline 2");
         assert!(first.origin_uri.ends_with("/orders.new"));
-        assert!(session.next_publish().expect("closed").is_none());
-        let mut session = far_end.accept_one(&listener).expect("second");
+        // The same server, so the same client: connected once.
         let second = session.next_publish().expect("second").expect("one");
         assert!(second.origin_uri.ends_with("/orders.cancel"));
         assert!(second.bytes.is_empty());
         assert!(session.next_publish().expect("closed").is_none());
         sender.join().expect("thread").expect("sending");
+    }
+
+    #[test]
+    fn a_thousand_publishes_connect_once_and_a_client_the_server_closed_is_replaced() {
+        const SENDS: usize = 1000;
+        let far_end = NatsTransport::new("127.0.0.1:0", "probe").timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = NatsTransport::new(address, "probe").timing_out_after(secs(5));
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for n in 0..SENDS {
+                sending.send("orders.new", n.to_string().as_bytes())?;
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a publish.
+            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
+            sending.send("orders.new", b"after the close")
+        });
+        // One CONNECT for every publish: one session accepted.
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        for n in 0..SENDS {
+            let arrived = session.next_publish().expect("publish").expect("one");
+            assert_eq!(arrived.bytes, n.to_string().as_bytes());
+            session.answer_flush().expect("flushed");
+        }
+        drop(session);
+        let mut again = far_end.accept_one(&listener).expect("a new client");
+        let last = again.next_publish().expect("publish").expect("one");
+        assert_eq!(last.bytes, b"after the close");
+        again.answer_flush().expect("flushed");
+        sender.join().expect("thread").expect("sending");
+        assert_eq!(near.clients.opened(), 2);
     }
 
     #[test]
