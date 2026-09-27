@@ -121,6 +121,23 @@ impl Session {
         }
     }
 
+    /// Serve the client until it asks whether the server caught up, and say
+    /// it has: the PONG a client that flushes after publishing waits on,
+    /// while it keeps its connection for the next.
+    ///
+    /// # Errors
+    /// Where the connection broke, the client closed first, or nothing
+    /// arrived before the timeout.
+    pub fn answer_flush(&mut self) -> Result<()> {
+        loop {
+            match read(&mut self.reader)? {
+                Some(Line::Ping) => return self.write(&Line::Pong),
+                Some(_) => {}
+                None => return Err(protocol_error("the client closed without flushing")),
+            }
+        }
+    }
+
     /// Deliver `payload` on `subject` to the client, under the sid it
     /// subscribed with — or the first subscription's, or `1`.
     ///
