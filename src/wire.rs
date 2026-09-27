@@ -1,5 +1,6 @@
-//! The NATS protocol on the wire: one line, CRLF-terminated, and a payload
-//! after PUB and MSG whose length the line already said.
+//! The NATS protocol on the wire: one line, written CRLF-terminated and read
+//! to its CRLF or bare LF as the server reads it, and a payload after PUB and
+//! MSG whose length the line already said.
 //!
 //! Text, deliberately: the protocol is meant to be read by a person with
 //! `telnet`, and this file keeps it that way. The JSON that INFO and CONNECT
@@ -7,6 +8,7 @@
 
 use std::io::BufRead;
 
+use transport::ceiling;
 use transport::error::{Result, classify, protocol_error};
 
 /// One protocol line, either direction.
@@ -99,21 +101,13 @@ pub fn encode(line: &Line) -> Vec<u8> {
 /// lines.
 ///
 /// # Errors
-/// A connection that closes mid-line, a line that is not NATS, or a payload
-/// shorter than its length.
+/// A connection that closes mid-line, a line over `net::read::MAX_LINE` or
+/// not UTF-8, a line that is not NATS, a length over `net::MAX_BODY`, or a
+/// payload shorter than its length.
 pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
-    let mut raw = Vec::new();
-    let read = reader
-        .read_until(b'\n', &mut raw)
-        .map_err(|e| classify("reading a protocol line", &e))?;
-    if read == 0 {
+    let Some(text) = net::read::line(reader)? else {
         return Ok(None);
-    }
-    if !raw.ends_with(b"\r\n") {
-        return Err(protocol_error("a protocol line without its CRLF"));
-    }
-    raw.truncate(raw.len() - 2);
-    let text = String::from_utf8(raw).map_err(|_| protocol_error("a line that is not UTF-8"))?;
+    };
     let (verb, rest) = text.split_once(' ').unwrap_or((text.as_str(), ""));
     let line = match verb.to_ascii_uppercase().as_str() {
         "INFO" => Line::Info(rest.trim().to_string()),
@@ -184,6 +178,7 @@ fn payload(reader: &mut impl BufRead, length: &str) -> Result<Vec<u8>> {
     let length: usize = length
         .parse()
         .map_err(|_| protocol_error(format!("{length:?} is not a payload length")))?;
+    ceiling::within(length, net::MAX_BODY, "Xmip reads in one payload")?;
     let mut bytes = vec![0u8; length + 2];
     reader
         .read_exact(&mut bytes)
@@ -251,7 +246,13 @@ mod tests {
     #[test]
     fn what_is_not_nats_is_refused() {
         assert!(read(&mut &b""[..]).expect("closed").is_none());
-        assert!(read(&mut &b"PING\n"[..]).is_err(), "bare LF");
+        assert_eq!(
+            read(&mut &b"PING\n"[..]).expect("bare LF"),
+            Some(Line::Ping),
+            "a bare LF ends a line, as the NATS server itself reads it"
+        );
+        let claimed = read(&mut &b"PUB a 18446744073709551615\r\n"[..]);
+        assert!(claimed.expect_err("claimed").message.contains("over the"));
         assert!(read(&mut &b"PUB a 5\r\nhel\r\n"[..]).is_err(), "short");
         assert!(read(&mut &b"PUB a x\r\n"[..]).is_err(), "length");
         assert!(read(&mut &b"PUB a\r\n"[..]).is_err(), "no length");
