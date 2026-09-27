@@ -31,8 +31,12 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
 pub use wire::Line;
+use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+
+/// The name a Location presents in CONNECT unless told otherwise.
+pub const DEFAULT_NAME: &str = "xmip";
 
 #[derive(Clone)]
 pub struct NatsTransport {
@@ -49,7 +53,7 @@ impl NatsTransport {
         Self {
             server: server.into(),
             subject: subject.into(),
-            name: "xmip".to_string(),
+            name: DEFAULT_NAME.to_string(),
             timeout: None,
         }
     }
@@ -139,6 +143,46 @@ impl Transport for NatsTransport {
     }
 }
 
+impl Configured for NatsTransport {
+    /// The address is the server's host and port: where a Location connects.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "subject",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The subject a Receive Location subscribes to, and the one a Send \
+                          Location publishes on when its target names none.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "name",
+                kind: Kind::Text,
+                presence: Presence::Default(Fixed::Text(DEFAULT_NAME)),
+                meaning: "The name a Location presents to the server in CONNECT.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a peer that stops mid-line is waited on, and how long a \
+                          quiet server ends a receive; unbounded when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let transport = Self::new(address, settings.text("subject")).named(settings.text("name"));
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
+    }
+}
+
 impl NatsTransport {
     /// Both ends on this machine: an ephemeral local port, the loopback
     /// timeout, one subject called `probe`.
@@ -181,6 +225,27 @@ impl Loopback for NatsTransport {
 mod tests {
     use super::*;
     use transport::payload::{edge_payloads, sized_payloads};
+
+    #[test]
+    fn nats_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(NatsTransport::SETTINGS.problems(), Vec::<String>::new());
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let given = [text("subject", "orders.*"), text("timeout", "2s")];
+        let built = NatsTransport::open("bus:4222", Applies::Receive, &given).expect("built");
+        assert_eq!(built.server, "bus:4222");
+        assert_eq!(built.subject, "orders.*");
+        assert_eq!(built.name, DEFAULT_NAME);
+        assert_eq!(built.timeout, Some(secs(2)));
+        let Err(refused) = NatsTransport::open("bus:4222", Applies::Send, &given[1..]) else {
+            panic!("subject is required");
+        };
+        assert!(
+            refused.message.contains("\"subject\""),
+            "{}",
+            refused.message
+        );
+    }
 
     #[test]
     fn a_client_publishes_to_a_session() {
