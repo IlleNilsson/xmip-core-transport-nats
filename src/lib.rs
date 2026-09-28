@@ -26,10 +26,12 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::Client;
+use net::Target;
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::pool::delivered;
 use transport::socket;
 use transport::{Arrived, Configured, Directions, Pool, Transport};
 pub use wire::Line;
@@ -46,6 +48,9 @@ pub struct NatsTransport {
     timeout: Option<Duration>,
     /// The clients a send publishes on, connected once per server and kept.
     clients: Pool<Client>,
+    /// The client a receive takes from, connected and subscribed on the
+    /// first receive and kept subscribed.
+    subscriptions: Pool<Client>,
 }
 
 impl NatsTransport {
@@ -58,6 +63,7 @@ impl NatsTransport {
             name: DEFAULT_NAME.to_string(),
             timeout: None,
             clients: Pool::new(),
+            subscriptions: Pool::new(),
         }
     }
 
@@ -104,7 +110,7 @@ impl NatsTransport {
     /// `nats://host:4222/orders.new` — or is a subject alone on this
     /// transport's server.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match socket::target("nats", target) {
+        match Target::under(&["nats"], target).map(|named| (named.authority(), named.path())) {
             Some((peer, "")) => (peer, &self.subject),
             Some(pair) => pair,
             None => (&self.server, target),
@@ -121,21 +127,19 @@ impl Transport for NatsTransport {
         Directions::BOTH
     }
 
-    /// Subscribe and take what the server delivers until it is quiet for the
-    /// timeout, or closes.
+    /// Take what the server delivers until it is quiet for the timeout, or
+    /// closes, on the subscription the first receive made and kept: what
+    /// the server delivered between two receives waits in the socket.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let mut client = self.connect()?;
-        client.subscribe(&self.subject)?;
-        let mut arrived = Vec::new();
-        loop {
-            match client.next_message() {
-                Ok(Some(message)) => arrived.push(message),
-                Ok(None) => break,
-                Err(error) if error.retryable && !arrived.is_empty() => break,
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(arrived)
+        self.subscriptions.exchange(
+            self.server.as_str(),
+            || {
+                let mut client = self.connect()?;
+                client.subscribe(&self.subject)?;
+                Ok(client)
+            },
+            |client| delivered(client, Client::next_message),
+        )
     }
 
     /// Publish on the client kept for the server, connected on the first
@@ -340,6 +344,44 @@ mod tests {
     }
 
     #[test]
+    fn five_receives_subscribe_once_and_a_subscription_the_server_closed_is_replaced() {
+        let far_end = NatsTransport::new("127.0.0.1:0", "probe").timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = NatsTransport::new(address, "orders.*").timing_out_after(millis(100));
+        let receiving = near.clone();
+        let (taken, told) = std::sync::mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            let mut arrived = Vec::new();
+            while arrived.len() < 6 {
+                let now = receiving.receive()?;
+                if !now.is_empty() {
+                    taken.send(()).expect("told");
+                }
+                arrived.extend(now.into_iter().map(|one| one.bytes));
+            }
+            Ok::<_, transport::TransportError>(arrived)
+        });
+        let subscribed = |session: &mut Session| {
+            let event = session.next_event().expect("subscribed");
+            assert!(matches!(event, Some(Event::Subscribed { .. })), "{event:?}");
+        };
+        // One SUB for every receive: one session accepted.
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        subscribed(&mut session);
+        for round in 0..5u8 {
+            session.deliver("orders.new", &[round]).expect("delivered");
+            told.recv().expect("taken");
+        }
+        drop(session);
+        let mut again = far_end.accept_one(&listener).expect("a new client");
+        subscribed(&mut again);
+        again.deliver("orders.new", &[5]).expect("delivered");
+        let arrived = receiver.join().expect("thread").expect("receiving");
+        assert_eq!(arrived, (0..6u8).map(|n| vec![n]).collect::<Vec<_>>());
+        assert_eq!(near.subscriptions.opened(), 2);
+    }
+
+    #[test]
     fn a_server_that_does_not_speak_nats_is_a_permanent_error() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("address").to_string();
@@ -378,5 +420,9 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    fn millis(n: u64) -> Duration {
+        Duration::from_millis(n)
     }
 }
