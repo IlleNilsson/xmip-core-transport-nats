@@ -6,6 +6,8 @@ A Send Location publishes on a client connected once per server and kept (`trans
 
 A Receive Location subscribes once: its first receive connects and subscribes, and the subscription stays attached between receives, so what the server delivers meanwhile waits in the socket for the next; each receive takes what came until the server is quiet for the timeout (`transport::pool::delivered`). A subscription the server closed is replaced. Until 2026-09-28 every receive connected and subscribed anew, and nothing delivered between two receives reached either.
 
+**Acceptance is at-most-once here.** Core NATS has no acknowledgement: the server sends a message once to whoever is subscribed and keeps nothing to send again, so a message is gone from the server as it arrives, and a crash before the runtime has it durably loses it. Every arrival says so (`Acknowledgement::at_most_once`, `client::AT_MOST_ONCE`) and nothing waits for the receive cycle's verdict. A Location that needs at-least-once uses `nats-jetstream`.
+
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls: scheme, authority, path and decoded query. Until 2026-09-28 it was read through the transport capability's `socket::target`, which split it on its first slash and left the query in the path.
 
 ## Toolchain

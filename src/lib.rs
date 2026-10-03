@@ -33,7 +33,7 @@ use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::pool::delivered;
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Pool, Transport};
+use transport::{Arrived, Configured, Directions, Pool, Taken, Transport};
 pub use wire::Line;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
@@ -127,9 +127,15 @@ impl Transport for NatsTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered("each message is its own, at-most-once")
+    }
+
     /// Take what the server delivers until it is quiet for the timeout, or
     /// closes, on the subscription the first receive made and kept: what
     /// the server delivered between two receives waits in the socket.
+    /// **Acceptance is at-most-once here** ([`client::AT_MOST_ONCE`]): core
+    /// NATS has no acknowledgement, so nothing waits for the verdict.
     fn receive(&self) -> Result<Vec<Arrived>> {
         self.subscriptions.exchange(
             self.server.as_str(),
@@ -207,7 +213,7 @@ impl NatsTransport {
 }
 
 impl Accepting for NatsTransport {
-    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         let mut session = self.accept_one(listener)?;
         let arrived = session
             .next_publish()?
@@ -339,8 +345,10 @@ mod tests {
         drop(session);
         let arrived = receiver.join().expect("thread").expect("receiving");
         assert_eq!(arrived.len(), 2);
-        assert_eq!(arrived[0].bytes, b"first");
+        assert!(arrived.iter().all(|one| !one.defers()), "at-most-once");
         assert!(arrived[1].origin_uri.ends_with("/orders.cancel?sid=1"));
+        let first = arrived.into_iter().next().expect("first");
+        assert_eq!(first.taken().expect("taken").bytes, b"first");
     }
 
     #[test]
@@ -357,7 +365,9 @@ mod tests {
                 if !now.is_empty() {
                     taken.send(()).expect("told");
                 }
-                arrived.extend(now.into_iter().map(|one| one.bytes));
+                for one in now {
+                    arrived.push(one.taken()?.bytes);
+                }
             }
             Ok::<_, transport::TransportError>(arrived)
         });
