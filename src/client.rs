@@ -8,9 +8,14 @@ use std::time::Duration;
 
 use transport::error::{Result, classify, protocol_error};
 use transport::pool::{Pooled, alive};
-use transport::{Arrived, socket};
+use transport::{Acknowledgement, Arrived, socket};
 
 use crate::wire::{Line, encode, read};
+
+/// Why a core NATS message is acknowledged at most once: what every
+/// arrival [`Client::next_message`] hands back says, and the README.
+pub const AT_MOST_ONCE: &str = "core NATS has no acknowledgement: the server sends a message \
+     once to whoever is subscribed and keeps nothing to send again";
 
 /// One connected client: publishes, subscribes, takes what the server
 /// sends. Kept between sends while the server keeps it open.
@@ -115,6 +120,8 @@ impl Client {
     }
 
     /// The next message the server delivers, or `None` when it closed.
+    /// **Acceptance is at-most-once here** ([`AT_MOST_ONCE`]): the server
+    /// has already forgotten it.
     ///
     /// # Errors
     /// Where the connection broke, nothing arrived before the timeout, or the
@@ -128,9 +135,10 @@ impl Client {
                     payload,
                     ..
                 }) => {
-                    return Ok(Some(Arrived::new(
+                    return Ok(Some(Arrived::whole(
                         format!("nats://{}/{subject}?sid={sid}", self.server),
                         payload,
+                        Acknowledgement::at_most_once(AT_MOST_ONCE),
                     )));
                 }
                 Some(_) => {}

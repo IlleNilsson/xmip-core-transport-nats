@@ -10,7 +10,7 @@ use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use transport::Arrived;
+use transport::Taken;
 use transport::error::{Result, classify, protocol_error};
 use transport::socket;
 
@@ -19,8 +19,8 @@ use crate::wire::{Line, encode, read};
 /// What a client did, as [`Session::next_event`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The client published; here is the Stream.
-    Published(Arrived),
+    /// The client published; here is what it published.
+    Published(Taken),
     /// The client subscribed to `subject` under `sid`.
     Subscribed { subject: String, sid: String },
 }
@@ -81,10 +81,10 @@ impl Session {
     ///
     /// # Errors
     /// Where the connection broke, or nothing arrived before the timeout.
-    pub fn next_publish(&mut self) -> Result<Option<Arrived>> {
+    pub fn next_publish(&mut self) -> Result<Option<Taken>> {
         loop {
             match self.next_event()? {
-                Some(Event::Published(arrived)) => return Ok(Some(arrived)),
+                Some(Event::Published(taken)) => return Ok(Some(taken)),
                 Some(Event::Subscribed { .. }) => {}
                 None => return Ok(None),
             }
@@ -103,7 +103,7 @@ impl Session {
                     subject, payload, ..
                 }) => {
                     let origin = format!("nats://{}/{subject}", self.peer);
-                    return Ok(Some(Event::Published(Arrived::new(origin, payload))));
+                    return Ok(Some(Event::Published(Taken::new(origin, payload))));
                 }
                 Some(Line::Sub { subject, sid, .. }) => {
                     self.subscribed.push((subject.clone(), sid.clone()));
