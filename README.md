@@ -10,6 +10,10 @@ A Receive Location subscribes once: its first receive connects and subscribes, a
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls: scheme, authority, path and decoded query. Until 2026-09-28 it was read through the transport capability's `socket::target`, which split it on its first slash and left the query in the path.
 
+## The deduplication key
+
+Core NATS has no identifier a server deduplicates by, and a send here carries no key (`Transport::send_keyed` is the default). What `nats-jetstream` needs for its `Nats-Msg-Id` is here since 2026-10-04: `wire::Line::HPub`, a PUB with headers, written and read, and `Client::connect_with_headers`, which says `headers` in CONNECT; `Client::connect` does not, so a subscriber is delivered messages without them.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

@@ -5,6 +5,11 @@
 //! Text, deliberately: the protocol is meant to be read by a person with
 //! `telnet`, and this file keeps it that way. The JSON that INFO and CONNECT
 //! carry is passed through as text; nothing here reads it.
+//!
+//! HPUB, a PUB with headers (NATS 2.2), is written and read since
+//! 2026-10-04, for the one header Xmip sends: `JetStream`'s `Nats-Msg-Id`.
+//! Its header block is `NATS/1.0`, then `Name: value` lines, then a blank
+//! line, and its two lengths are the block's and the block's and payload's.
 
 use std::io::BufRead;
 
@@ -21,6 +26,13 @@ pub enum Line {
     Pub {
         subject: String,
         reply: Option<String>,
+        payload: Vec<u8>,
+    },
+    /// A PUB with headers, each a name and its value, in order.
+    HPub {
+        subject: String,
+        reply: Option<String>,
+        headers: Vec<(String, String)>,
         payload: Vec<u8>,
     },
     Sub {
@@ -60,6 +72,23 @@ pub fn encode(line: &Line) -> Vec<u8> {
                 None => format!("PUB {subject} {}\r\n", payload.len()),
             };
             out.extend_from_slice(head.as_bytes());
+            out.extend_from_slice(payload);
+            out.extend_from_slice(b"\r\n");
+        }
+        Line::HPub {
+            subject,
+            reply,
+            headers,
+            payload,
+        } => {
+            let block = header_block(headers);
+            let total = block.len() + payload.len();
+            let head = match reply {
+                Some(reply) => format!("HPUB {subject} {reply} {} {total}\r\n", block.len()),
+                None => format!("HPUB {subject} {} {total}\r\n", block.len()),
+            };
+            out.extend_from_slice(head.as_bytes());
+            out.extend_from_slice(&block);
             out.extend_from_slice(payload);
             out.extend_from_slice(b"\r\n");
         }
@@ -125,6 +154,34 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
                 payload: payload(reader, length)?,
             }
         }
+        "HPUB" => {
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let (subject, reply, block, total) = match words.as_slice() {
+                [subject, block, total] => (*subject, None, *block, *total),
+                [subject, reply, block, total] => {
+                    (*subject, Some((*reply).to_string()), *block, *total)
+                }
+                _ => {
+                    return Err(protocol_error(
+                        "an HPUB that is not subject [reply] header-length length",
+                    ));
+                }
+            };
+            let mut payload = payload(reader, total)?;
+            let block = block
+                .parse::<usize>()
+                .ok()
+                .filter(|block| *block <= payload.len())
+                .ok_or_else(|| protocol_error(format!("{block:?} is not a header length")))?;
+            let headers = headers_of(&payload[..block])?;
+            payload.drain(..block);
+            Line::HPub {
+                subject: subject.to_string(),
+                reply,
+                headers,
+                payload,
+            }
+        }
         "SUB" => {
             let words: Vec<&str> = rest.split_whitespace().collect();
             let (subject, queue, sid) = match words.as_slice() {
@@ -174,6 +231,41 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
     Ok(Some(line))
 }
 
+/// The header block HPUB carries: `NATS/1.0`, each header on a line of its
+/// own, and the blank line that ends them.
+fn header_block(headers: &[(String, String)]) -> Vec<u8> {
+    let mut block = String::from("NATS/1.0\r\n");
+    for (name, value) in headers {
+        block.push_str(name);
+        block.push_str(": ");
+        block.push_str(value);
+        block.push_str("\r\n");
+    }
+    block.push_str("\r\n");
+    block.into_bytes()
+}
+
+/// The headers a header block carries, in order.
+fn headers_of(block: &[u8]) -> Result<Vec<(String, String)>> {
+    let text = std::str::from_utf8(block)
+        .map_err(|_| protocol_error("a header block that is not UTF-8"))?;
+    let mut lines = text.split("\r\n");
+    if !lines
+        .next()
+        .is_some_and(|first| first.starts_with("NATS/1.0"))
+    {
+        return Err(protocol_error("a header block that does not open NATS/1.0"));
+    }
+    lines
+        .take_while(|line| !line.is_empty())
+        .map(|line| {
+            line.split_once(':')
+                .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+                .ok_or_else(|| protocol_error(format!("{line:?} is not a header")))
+        })
+        .collect()
+}
+
 fn payload(reader: &mut impl BufRead, length: &str) -> Result<Vec<u8>> {
     let length: usize = length
         .parse()
@@ -212,6 +304,18 @@ mod tests {
         round_trip(&Line::Pub {
             subject: "orders.new".into(),
             reply: Some("_INBOX.1".into()),
+            payload: Vec::new(),
+        });
+        round_trip(&Line::HPub {
+            subject: "orders.new".into(),
+            reply: Some("_INBOX.1".into()),
+            headers: vec![("Nats-Msg-Id".into(), "0b6f5a52".into())],
+            payload: b"hello\r\nworld".to_vec(),
+        });
+        round_trip(&Line::HPub {
+            subject: "orders.new".into(),
+            reply: None,
+            headers: Vec::new(),
             payload: Vec::new(),
         });
         round_trip(&Line::Sub {
@@ -257,6 +361,13 @@ mod tests {
         assert!(read(&mut &b"PUB a x\r\n"[..]).is_err(), "length");
         assert!(read(&mut &b"PUB a\r\n"[..]).is_err(), "no length");
         assert!(read(&mut &b"HELO\r\n"[..]).is_err(), "verb");
+        let wire = b"HPUB a 15 15\r\nNATS/1.0\r\nX\r\n\r\n\r\n";
+        assert!(
+            read(&mut &wire[..]).is_err(),
+            "a header line without a colon"
+        );
+        let past = b"HPUB a 9 4\r\nabcd\r\n";
+        assert!(read(&mut &past[..]).is_err(), "a block past the end");
         assert!(read(&mut &b"PUB a 2\r\nabXX"[..]).is_err(), "no CRLF");
         let lower = read(&mut &b"ping\r\n"[..]).expect("read");
         assert_eq!(lower, Some(Line::Ping), "verbs are case-insensitive");

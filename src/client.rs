@@ -34,6 +34,24 @@ impl Client {
     /// # Errors
     /// Where the server could not be reached or did not open with INFO.
     pub fn connect(server: &str, name: &str, timeout: Option<Duration>) -> Result<Self> {
+        Self::open(server, name, timeout, false)
+    }
+
+    /// [`Client::connect`], saying in CONNECT that this client sends and
+    /// takes headers: what an HPUB needs. A client that does not say so is
+    /// delivered a message without its headers.
+    ///
+    /// # Errors
+    /// As [`Client::connect`].
+    pub fn connect_with_headers(
+        server: &str,
+        name: &str,
+        timeout: Option<Duration>,
+    ) -> Result<Self> {
+        Self::open(server, name, timeout, true)
+    }
+
+    fn open(server: &str, name: &str, timeout: Option<Duration>, headers: bool) -> Result<Self> {
         let stream = socket::connect_tcp(server, timeout)?;
         let (reader, writer) = socket::split(stream)?;
         let mut client = Self {
@@ -50,7 +68,7 @@ impl Client {
         let connect = serde_json::json!({
             "verbose": false,
             "pedantic": false,
-            "headers": false,
+            "headers": headers,
             "name": name,
             "lang": "rust",
             "version": "0.1.0",
