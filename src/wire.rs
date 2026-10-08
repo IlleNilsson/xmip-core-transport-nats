@@ -49,6 +49,15 @@ pub enum Line {
         reply: Option<String>,
         payload: Vec<u8>,
     },
+    /// A MSG with headers (NATS 2.2): what a subscriber is delivered of a
+    /// message published with them, each a name and its value, in order.
+    HMsg {
+        subject: String,
+        sid: String,
+        reply: Option<String>,
+        headers: Vec<(String, String)>,
+        payload: Vec<u8>,
+    },
     Ping,
     Pong,
     Ok,
@@ -118,6 +127,24 @@ pub fn encode(line: &Line) -> Vec<u8> {
             out.extend_from_slice(payload);
             out.extend_from_slice(b"\r\n");
         }
+        Line::HMsg {
+            subject,
+            sid,
+            reply,
+            headers,
+            payload,
+        } => {
+            let block = header_block(headers);
+            let total = block.len() + payload.len();
+            let head = match reply {
+                Some(reply) => format!("HMSG {subject} {sid} {reply} {} {total}\r\n", block.len()),
+                None => format!("HMSG {subject} {sid} {} {total}\r\n", block.len()),
+            };
+            out.extend_from_slice(head.as_bytes());
+            out.extend_from_slice(&block);
+            out.extend_from_slice(payload);
+            out.extend_from_slice(b"\r\n");
+        }
         Line::Ping => out.extend_from_slice(b"PING\r\n"),
         Line::Pong => out.extend_from_slice(b"PONG\r\n"),
         Line::Ok => out.extend_from_slice(b"+OK\r\n"),
@@ -167,14 +194,7 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
                     ));
                 }
             };
-            let mut payload = payload(reader, total)?;
-            let block = block
-                .parse::<usize>()
-                .ok()
-                .filter(|block| *block <= payload.len())
-                .ok_or_else(|| protocol_error(format!("{block:?} is not a header length")))?;
-            let headers = headers_of(&payload[..block])?;
-            payload.drain(..block);
+            let (headers, payload) = headed(reader, block, total)?;
             Line::HPub {
                 subject: subject.to_string(),
                 reply,
@@ -222,6 +242,7 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
                 payload: payload(reader, length)?,
             }
         }
+        "HMSG" => hmsg(reader, rest)?,
         "PING" => Line::Ping,
         "PONG" => Line::Pong,
         "+OK" => Line::Ok,
@@ -229,6 +250,47 @@ pub fn read(reader: &mut impl BufRead) -> Result<Option<Line>> {
         other => return Err(protocol_error(format!("{other:?} is not a NATS verb"))),
     };
     Ok(Some(line))
+}
+
+/// An HMSG's line after its verb, `rest`, and what follows it on `reader`.
+fn hmsg(reader: &mut impl BufRead, rest: &str) -> Result<Line> {
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let (subject, sid, reply, block, total) = match words.as_slice() {
+        [subject, sid, block, total] => (*subject, *sid, None, *block, *total),
+        [subject, sid, reply, block, total] => {
+            (*subject, *sid, Some((*reply).to_string()), *block, *total)
+        }
+        _ => {
+            return Err(protocol_error(
+                "an HMSG that is not subject sid [reply] header-length length",
+            ));
+        }
+    };
+    let (headers, payload) = headed(reader, block, total)?;
+    Ok(Line::HMsg {
+        subject: subject.to_string(),
+        sid: sid.to_string(),
+        reply,
+        headers,
+        payload,
+    })
+}
+
+/// Headers, each a name and its value in order, and the payload after them.
+type Headed = (Vec<(String, String)>, Vec<u8>);
+
+/// The headers and the payload an HPUB or an HMSG carries: `total` bytes,
+/// the first `block` of them the header block.
+fn headed(reader: &mut impl BufRead, block: &str, total: &str) -> Result<Headed> {
+    let mut payload = payload(reader, total)?;
+    let block = block
+        .parse::<usize>()
+        .ok()
+        .filter(|block| *block <= payload.len())
+        .ok_or_else(|| protocol_error(format!("{block:?} is not a header length")))?;
+    let headers = headers_of(&payload[..block])?;
+    payload.drain(..block);
+    Ok((headers, payload))
 }
 
 /// The header block HPUB carries: `NATS/1.0`, each header on a line of its
@@ -371,5 +433,19 @@ mod tests {
         assert!(read(&mut &b"PUB a 2\r\nabXX"[..]).is_err(), "no CRLF");
         let lower = read(&mut &b"ping\r\n"[..]).expect("read");
         assert_eq!(lower, Some(Line::Ping), "verbs are case-insensitive");
+    }
+
+    #[test]
+    fn an_hmsg_is_delivered_with_the_headers_its_publisher_set() {
+        let hmsg = Line::HMsg {
+            subject: "orders".into(),
+            sid: "1".into(),
+            reply: None,
+            headers: vec![("Sender".into(), "c1".into())],
+            payload: b"{}".to_vec(),
+        };
+        let wire = encode(&hmsg);
+        assert!(wire.starts_with(b"HMSG orders 1 "), "{wire:?}");
+        assert_eq!(read(&mut wire.as_slice()).expect("read"), Some(hmsg));
     }
 }

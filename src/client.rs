@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use transport::error::{Result, classify, protocol_error};
 use transport::pool::{Pooled, alive};
-use transport::{Acknowledgement, Arrived, socket};
+use transport::{Acknowledgement, Arrived, Headers, socket};
 
 use crate::wire::{Line, encode, read};
 
@@ -153,11 +153,33 @@ impl Client {
                     payload,
                     ..
                 }) => {
-                    return Ok(Some(Arrived::whole(
-                        format!("nats://{}/{subject}?sid={sid}", self.server),
-                        payload,
-                        Acknowledgement::at_most_once(AT_MOST_ONCE),
-                    )));
+                    return Ok(Some(
+                        Arrived::whole(
+                            format!("nats://{}/{subject}?sid={sid}", self.server),
+                            payload,
+                            Acknowledgement::at_most_once(AT_MOST_ONCE),
+                        )
+                        .detected(),
+                    ));
+                }
+                // Published with headers: who sent it is said there, where
+                // the publisher says it.
+                Some(Line::HMsg {
+                    subject,
+                    sid,
+                    headers,
+                    payload,
+                    ..
+                }) => {
+                    return Ok(Some(
+                        Arrived::whole(
+                            format!("nats://{}/{subject}?sid={sid}", self.server),
+                            payload,
+                            Acknowledgement::at_most_once(AT_MOST_ONCE),
+                        )
+                        .detected()
+                        .with_headers(Headers::of("nats").text(headers)),
+                    ));
                 }
                 Some(_) => {}
                 None => return Ok(None),

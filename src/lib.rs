@@ -28,6 +28,7 @@ use std::time::Duration;
 pub use client::Client;
 use net::Target;
 pub use session::{Event, Session};
+use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -225,6 +226,12 @@ impl Accepting for NatsTransport {
 }
 
 impl Loopback for NatsTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "the server delivers it: its headers say who sent it, the peer is the server",
+        )
+    }
+
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
