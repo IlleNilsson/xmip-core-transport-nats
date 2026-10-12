@@ -132,6 +132,10 @@ impl Transport for NatsTransport {
         transport::Arrivals::Unordered("each message is its own, at-most-once")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the server is drained until quiet for the timeout")
+    }
+
     /// Take what the server delivers until it is quiet for the timeout, or
     /// closes, on the subscription the first receive made and kept: what
     /// the server delivered between two receives waits in the socket.
