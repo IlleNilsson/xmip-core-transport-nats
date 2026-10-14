@@ -296,7 +296,7 @@ mod tests {
         // The same server, so the same client: connected once.
         let second = session.next_publish().expect("second").expect("one");
         assert!(second.origin_uri.ends_with("/orders.cancel"));
-        assert!(second.bytes.is_empty());
+        assert_eq!(second.bytes, [] as [u8; 0]);
         assert!(session.next_publish().expect("closed").is_none());
         sender.join().expect("thread").expect("sending");
     }
