@@ -114,7 +114,10 @@ impl Session {
                 Some(Line::Pong | Line::Connect(_)) => {}
                 None => return Ok(None),
                 Some(other) => {
+                    // A client pipelines: what it sent after this is
+                    // unread, and a bare drop would reset the -ERR away.
                     self.write(&Line::Err("Unknown Protocol Operation".to_string()))?;
+                    socket::finish(&self.writer)?;
                     return Err(protocol_error(format!("{other:?} from a client")));
                 }
             }
