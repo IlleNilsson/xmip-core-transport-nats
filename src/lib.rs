@@ -141,7 +141,7 @@ impl Transport for NatsTransport {
     /// the server delivered between two receives waits in the socket.
     /// **Acceptance is at-most-once here** ([`client::AT_MOST_ONCE`]): core
     /// NATS has no acknowledgement, so nothing waits for the verdict.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         self.subscriptions.exchange(
             self.server.as_str(),
             || {
@@ -149,13 +149,20 @@ impl Transport for NatsTransport {
                 client.subscribe(&self.subject)?;
                 Ok(client)
             },
-            |client| delivered(client, Client::next_message),
+            |client| delivered(client, most, Client::next_message),
+        )
+    }
+
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "one PUB carries the whole body within the server's max_payload",
         )
     }
 
     /// Publish on the client kept for the server, connected on the first
     /// send to it, and flush: the PONG says the server has the message.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let (server, subject) = self.resolve(target);
         self.clients.exchange(
             server,
