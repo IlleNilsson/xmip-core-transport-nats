@@ -12,7 +12,7 @@ A send target is read by `net::Target` in [xmip-core-library-net](https://github
 
 ## The deduplication key
 
-Core NATS has no identifier a server deduplicates by, and a send here carries no key (`Transport::send_keyed` is the default). What `nats-jetstream` needs for its `Nats-Msg-Id` is here since 2026-10-04: `wire::Line::HPub`, a PUB with headers, written and read, and `Client::connect_with_headers`, which says `headers` in CONNECT; `Client::connect` does not, so a subscriber is delivered messages without them.
+Core NATS has no identifier a server deduplicates by, and a send here carries no key (the key `Transport::send_from` is handed, `Outgoing::key`, goes nowhere). What `nats-jetstream` needs for its `Nats-Msg-Id` is here since 2026-10-04: `wire::Line::HPub`, a PUB with headers, written and read, and `Client::connect_with_headers`, which says `headers` in CONNECT; `Client::connect` does not, so a subscriber is delivered messages without them.
 
 ## Toolchain
 
