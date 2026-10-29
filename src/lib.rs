@@ -111,7 +111,7 @@ impl NatsTransport {
     /// `nats://host:4222/orders.new` — or is a subject alone on this
     /// transport's server.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match Target::under(&["nats"], target).map(|named| (named.authority(), named.path())) {
+        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
             Some((peer, "")) => (peer, &self.subject),
             Some(pair) => pair,
             None => (&self.server, target),
@@ -205,6 +205,9 @@ impl Configured for NatsTransport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["nats"];
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let transport = Self::new(address, settings.text("subject")).named(settings.text("name"));
