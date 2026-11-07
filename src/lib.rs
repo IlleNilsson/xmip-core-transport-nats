@@ -264,6 +264,7 @@ impl Loopback for NatsTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use transport::payload::{edge_payloads, sized_payloads};
 
     #[test]
@@ -419,7 +420,7 @@ mod tests {
         });
         let subscribed = |session: &mut Session| {
             let event = session.next_event().expect("subscribed");
-            assert!(matches!(event, Some(Event::Subscribed { .. })), "{event:?}");
+            assert_matches!(event, Some(Event::Subscribed { .. }), "{event:?}");
         };
         // One SUB for every receive: one session accepted.
         let mut session = far_end.accept_one(&listener).expect("accepting");
