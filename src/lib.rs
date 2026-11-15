@@ -76,14 +76,6 @@ impl NatsTransport {
         self
     }
 
-    /// Give up on a peer that stops mid-line, and stop receiving when the
-    /// server has been quiet this long.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Connect to the server as a client.
     ///
     /// # Errors
@@ -194,14 +186,12 @@ impl Configured for NatsTransport {
                 meaning: "The name a Location presents to the server in CONNECT.",
                 applies: Applies::Both,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a peer that stops mid-line is waited on, and how long a \
-                          quiet server ends a receive; unbounded when left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a peer that stops mid-line is waited on, and how long a \
+                 quiet server ends a receive; unbounded when left out.",
+            ),
         ],
     };
 
@@ -213,12 +203,12 @@ impl Configured for NatsTransport {
         destination::OWN
     }
 
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
+
     fn configured(address: &str, settings: &Read) -> Result<Self> {
-        let transport = Self::new(address, settings.text("subject")).named(settings.text("name"));
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+        Ok(Self::new(address, settings.text("subject")).named(settings.text("name")))
     }
 }
 
