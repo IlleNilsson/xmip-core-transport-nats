@@ -16,6 +16,10 @@ A Send Location publishes to the subject its `subject` setting names, on the ser
 
 Core NATS has no identifier a server deduplicates by, and a send here carries no key (the key `Transport::send_from` is handed, `Outgoing::key`, goes nowhere). What `nats-jetstream` needs for its `Nats-Msg-Id` is here since 2026-10-04: `wire::Line::HPub`, a PUB with headers, written and read, and `Client::connect_with_headers`, which says `headers` in CONNECT; `Client::connect` does not, so a subscriber is delivered messages without them.
 
+## The declaration
+
+What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which `Configured` reads (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `subject`, `name` and `timeout`, and `SCHEMES`, `nats`. `name` is `declaration::NAME`, which `nats-jetstream` declares from too, and its default, `declaration::DEFAULT_NAME`, is what a client presents unless told otherwise. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — `serde_json` among them — are behind the default feature. So the library the surfaces load can carry it without the code, for the language server and the desktop to suggest and check a NATS Location's settings though no node in their process loaded the technology, once the gathering crate of open problem 48 links it. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

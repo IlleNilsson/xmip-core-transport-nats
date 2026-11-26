@@ -17,31 +17,51 @@
 //! capability's, per ADR-0033.
 //!
 //! The origin URI carries what the line knew: `nats://server/subject?sid=1`.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, the `name`
+//! `nats-jetstream` declares too among it, and none of the code above,
+//! which is behind the default feature: what the surfaces' library carries
+//! (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod wire;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::Client;
+#[cfg(feature = "default")]
+use declaration::DEFAULT_NAME;
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
-use transport::ArrivalIdentity;
-use transport::destination;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::pool::delivered;
-use transport::socket;
+#[cfg(feature = "default")]
+use transport::{ArrivalIdentity, destination, pool::delivered, socket};
+#[cfg(feature = "default")]
 use transport::{Arrived, Configured, Directions, Pool, Taken, Transport};
+#[cfg(feature = "default")]
 pub use wire::Line;
-use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
-/// The name a Location presents in CONNECT unless told otherwise.
-pub const DEFAULT_NAME: &str = "xmip";
-
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct NatsTransport {
     server: String,
@@ -55,6 +75,7 @@ pub struct NatsTransport {
     subscriptions: Pool<Client>,
 }
 
+#[cfg(feature = "default")]
 impl NatsTransport {
     /// Speak to the server at `server` about `subject`.
     #[must_use]
@@ -110,6 +131,7 @@ impl NatsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for NatsTransport {
     fn name(&self) -> &'static str {
         "nats"
@@ -166,37 +188,10 @@ impl Transport for NatsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for NatsTransport {
-    /// The address is the server's host and port: where a Location connects.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "subject",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The subject a Receive Location subscribes to, and the one a Send \
-                          Location publishes on when its target names none.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "name",
-                kind: Kind::Text,
-                presence: Presence::Default(Fixed::Text(DEFAULT_NAME)),
-                meaning: "The name a Location presents to the server in CONNECT.",
-                applies: Applies::Both,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a peer that stops mid-line is waited on, and how long a \
-                 quiet server ends a receive; unbounded when left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["nats"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     /// The subject setting: the address names only the server.
     fn own_target(_address: &str) -> &str {
@@ -212,6 +207,7 @@ impl Configured for NatsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl NatsTransport {
     /// Both ends on this machine: an ephemeral local port, the loopback
     /// timeout, one subject called `probe`.
@@ -221,6 +217,7 @@ impl NatsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Accepting for NatsTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         let mut session = self.accept_one(listener)?;
@@ -233,6 +230,7 @@ impl Accepting for NatsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for NatsTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
@@ -260,6 +258,7 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use transport::payload::{edge_payloads, sized_payloads};
+    use xcore::settings::Applies;
 
     #[test]
     fn nats_declares_its_settings_and_reads_through_them() {
