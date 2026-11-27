@@ -20,11 +20,6 @@ Core NATS has no identifier a server deduplicates by, and a send here carries no
 
 What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which `Configured` reads (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `subject`, `name` and `timeout`, and `SCHEMES`, `nats`. `name` is `declaration::NAME`, which `nats-jetstream` declares from too, and its default, `declaration::DEFAULT_NAME`, is what a client presents unless told otherwise. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — `serde_json` among them — are behind the default feature. So the library the surfaces load carries it without the code, through the gathering crate xmip-core-declaration (open problem 48), and the language server and the desktop suggest and check a NATS Location's settings though no node in their process loaded the technology. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
 
-## Toolchain
-
-`rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
-here.
-
 ## Verification
 
 The included workflow is manual-only and calls the versioned shared workflow at
